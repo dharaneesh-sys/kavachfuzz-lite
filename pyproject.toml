@@ -1,0 +1,33 @@
+[project]
+name = "kavach"
+version = "0.1.0"
+description = "KavachFuzz-Lite - coverage-guided fuzzing for Python-native parsers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.9",
+    "pyyaml>=6.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "pymupdf>=1.23",
+    "pillow>=10.0",
+    "atheris>=2.0",
+]
+
+[project.scripts]
+kavach = "kavach.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
