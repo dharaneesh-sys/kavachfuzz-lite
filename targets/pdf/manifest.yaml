@@ -1,0 +1,4 @@
+name: pdf
+harness: harness.py
+seeds_glob: seeds/*
+max_len: 8192
