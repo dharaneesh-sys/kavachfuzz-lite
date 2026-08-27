@@ -7,9 +7,28 @@ from pathlib import Path
 import typer
 import yaml
 
+from kavach import __version__
+
 app = typer.Typer(help="KavachFuzz-Lite coverage-guided fuzzing")
 report_app = typer.Typer(help="Report commands")
 app.add_typer(report_app, name="report", help="Reporting commands")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"kavach {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False, "--version", "-v", callback=_version_callback, is_eager=True,
+        help="Show version and exit",
+    ),
+) -> None:
+    """KavachFuzz-Lite: coverage-guided fuzzing for Python-native parsers."""
+
 
 
 @app.command("init")
@@ -64,11 +83,12 @@ def fuzz_cmd(
     artifact_prefix: str | None = typer.Option(
         None, "--artifact_prefix", help="Prefix for crash artifacts"
     ),
+    workers: int = typer.Option(1, "--workers", help="Number of parallel fuzzing workers (maps to libFuzzer -jobs/-workers)"),
 ) -> None:
-    """Launch coverage-guided fuzzing campaign (stub for T04)."""
+    """Launch coverage-guided fuzzing campaign."""
     from kavach.fuzz import run_fuzz
 
-    code = run_fuzz(target, time, max_len, dict_path, artifact_prefix)
+    code = run_fuzz(target, time, max_len, dict_path, artifact_prefix, workers=workers)
     raise typer.Exit(code=code)
 
 
@@ -91,7 +111,6 @@ def minimize_cmd(
     from kavach.corpus import minimize_corpus
 
     minimize_corpus(target)
-    typer.echo("minimize stub")
 
 
 @app.command("triage")
@@ -102,7 +121,6 @@ def triage_cmd(
     from kavach.triage import triage_campaign
 
     triage_campaign(campaign)
-    typer.echo("triage stub")
 
 
 @report_app.command("serve")

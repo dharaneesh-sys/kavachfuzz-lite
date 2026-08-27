@@ -123,54 +123,43 @@ def _ensure_dict(target: str, dict_path: str | None) -> str | None:
 
 
 def _parse_stats(log_text: str) -> tuple[int, int, int, int]:
-    """Parse fuzz.log for cov_max, ft_max, corp_max, execs_estimated."""
+    """Parse fuzz.log for cov_max, ft_max, corp_max, execs_estimated.
+
+    Handles crash-truncated logs: reads last cov: line even without DONE.
+    """
     cov_max = 0
     ft_max = 0
     corp_max = 0
     execs_estimated = 0
-    # Lines like: #123 cov: 45 ft: 67 corp: 8/12b lim: 128 exec/s: 1234 rss: ...
-    # Also libFuzzer may emit without ft:  #123 cov: 45 corp: 8 etc
-    pat = re.compile(r"#\d+.*cov:\s*(\d+).*?ft:\s*(\d+).*?corp:\s*(\d+)")
-    pat_no_ft = re.compile(r"#\d+.*cov:\s*(\d+).*?corp:\s*(\d+)")
-    # fallback exec count from DONE line
+    pat = re.compile(r"#(\d+).*cov:\s*(\d+).*?ft:\s*(\d+).*?corp:\s*(\d+)")
+    pat_no_ft = re.compile(r"#(\d+).*cov:\s*(\d+).*?corp:\s*(\d+)")
     done_pat = re.compile(r"Done\s+(\d+)\s+runs")
     for line in log_text.splitlines():
         m = pat.search(line)
         if m:
             try:
-                cov = int(m.group(1))
-                ft = int(m.group(2))
-                corp = int(m.group(3))
-                cov_max = max(cov_max, cov)
-                ft_max = max(ft_max, ft)
-                corp_max = max(corp_max, corp)
+                cov_max = max(cov_max, int(m.group(2)))
+                ft_max = max(ft_max, int(m.group(3)))
+                corp_max = max(corp_max, int(m.group(4)))
             except ValueError:
                 pass
-            # Also track execs from leading #N as iteration count
-            hm = re.search(r"#(\d+)", line)
-            if hm:
-                try:
-                    execs_estimated = max(execs_estimated, int(hm.group(1)))
-                except ValueError:
-                    pass
+            try:
+                execs_estimated = max(execs_estimated, int(m.group(1)))
+            except ValueError:
+                pass
             continue
         m2 = pat_no_ft.search(line)
         if m2:
             try:
-                cov = int(m2.group(1))
-                corp = int(m2.group(2))
-                cov_max = max(cov_max, cov)
-                corp_max = max(corp_max, corp)
+                cov_max = max(cov_max, int(m2.group(2)))
+                corp_max = max(corp_max, int(m2.group(3)))
             except ValueError:
                 pass
-            hm = re.search(r"#(\d+)", line)
-            if hm:
-                try:
-                    execs_estimated = max(execs_estimated, int(hm.group(1)))
-                except ValueError:
-                    pass
-        # exec/s line sometimes has pulse
-        # also DONE
+            try:
+                execs_estimated = max(execs_estimated, int(m2.group(1)))
+            except ValueError:
+                pass
+            continue
         dm = done_pat.search(line)
         if dm:
             try:
@@ -186,6 +175,7 @@ def run_fuzz(
     max_len: int,
     dict_path: str | None,
     artifact_prefix: str | None,
+    workers: int = 1,
 ) -> int:
     project_root = _project_root()
     # Also handle cwd-based paths for test contexts
@@ -244,12 +234,15 @@ def run_fuzz(
     else:
         artifact_arg = str(campaign_dir_abs / "crash-")
 
-    seeds_arg = str(seeds_dir_abs)
+    corpus_dir = campaign_dir_abs / "corpus"
+    corpus_dir.mkdir(parents=True, exist_ok=True)
 
+    # N02: corpus dir (write target) is first arg; seeds dir (read-only) is second
     cmd = [
         python_bin,
         str(harness_abs),
-        seeds_arg,
+        str(corpus_dir),
+        str(seeds_dir_abs),
         f"-max_len={max_len}",
         "-close_fd_mask=3",
         f"-artifact_prefix={artifact_arg}",
@@ -257,6 +250,9 @@ def run_fuzz(
     ]
     if dict_file:
         cmd.append(f"-dict={dict_file}")
+    if workers > 1:
+        cmd.append(f"-jobs={workers}")
+        cmd.append(f"-workers={workers}")
 
     print(f"Campaign {campaign_id}: launching {' '.join(cmd)}")
     fuzz_log = campaign_dir / "fuzz.log"
@@ -343,7 +339,19 @@ def run_fuzz(
         print(f"warning: fuzz.log not found at {fuzz_log}", file=sys.stderr)
         log_text = output if "output" in locals() else ""
 
-    cov_max, ft_max, corp_max, execs_estimated = _parse_stats(log_text)
+    # N05: if multi-worker, also read per-worker logs and merge stats
+    combined_log = log_text
+    if workers > 1:
+        for worker_idx in range(workers):
+            worker_log = campaign_dir_abs / f"fuzz-{worker_idx}.log"
+            if worker_log.exists():
+                try:
+                    wl = worker_log.read_text(encoding="utf-8", errors="replace")
+                    combined_log += "\n" + wl
+                except Exception:
+                    pass
+
+    cov_max, ft_max, corp_max, execs_estimated = _parse_stats(combined_log)
     # Try to estimate execs from log if still 0: count # lines * scale? Already attempted via #N
     # Also look for exec/s lines to approximate, fallback to parsing INITED/DONE
     if execs_estimated == 0:
@@ -365,6 +373,14 @@ def run_fuzz(
     except Exception:
         pass
 
+    # N03: determine status from log content and crash count
+    status = "completed"
+    log_lower = log_text.lower()
+    if crash_count > 0:
+        status = "crashed"
+    elif "timeout" in log_lower or "timed out" in log_lower:
+        status = "timeout"
+
     stats = {
         "target": target,
         "id": campaign_id,
@@ -377,6 +393,7 @@ def run_fuzz(
         "crashes": crash_count,
         "dict": dict_file,
         "campaign_dir": str(campaign_dir_abs),
+        "status": status,
     }
     stats_path = campaign_dir / "stats.json"
     stats_path_abs = campaign_dir_abs / "stats.json"
@@ -388,9 +405,8 @@ def run_fuzz(
         except Exception as e:
             print(f"failed to write stats.json: {e}", file=sys.stderr)
 
-    print(f"Campaign {campaign_id}: cov {cov_max} ft {ft_max} corp {corp_max} execs ~{execs_estimated}, artifacts: {crash_count} crashes")
-    # Successful campaign even if no crashes; return 0 unless coverage parsing completely failed?
-    # But if cov is 0, log may indicate harness not instrumented; still return 0 but warn
-    if cov_max == 0 and corp_max == 0:
+    print(f"Campaign {campaign_id}: status={status} cov {cov_max} ft {ft_max} corp {corp_max} execs ~{execs_estimated}, artifacts: {crash_count} crashes")
+    # N03: only warn if coverage is zero AND we have no crash (toy_crash can legitimately have cov 0)
+    if cov_max == 0 and corp_max == 0 and crash_count == 0:
         print(f"warning: no coverage data parsed from {fuzz_log} - check harness instrumentation", file=sys.stderr)
     return 0
