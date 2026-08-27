@@ -122,43 +122,59 @@ def _ensure_dict(target: str, dict_path: str | None) -> str | None:
         return None
 
 
-def _parse_stats(log_text: str) -> tuple[int, int, int, int]:
-    """Parse fuzz.log for cov_max, ft_max, corp_max, execs_estimated.
+def _parse_stats(log_text: str) -> tuple[int, int, int, int, list[dict[str, int]]]:
+    """Parse fuzz.log for cov_max, ft_max, corp_max, execs_estimated, timeseries.
 
     Handles crash-truncated logs: reads last cov: line even without DONE.
+    Timeseries entries: {"t": iteration, "cov": N, "corp": N, "exec_s": N}.
     """
     cov_max = 0
     ft_max = 0
     corp_max = 0
     execs_estimated = 0
+    timeseries: list[dict[str, int]] = []
     pat = re.compile(r"#(\d+).*cov:\s*(\d+).*?ft:\s*(\d+).*?corp:\s*(\d+)")
     pat_no_ft = re.compile(r"#(\d+).*cov:\s*(\d+).*?corp:\s*(\d+)")
+    exec_s_pat = re.compile(r"exec/s:\s*(\d+)")
     done_pat = re.compile(r"Done\s+(\d+)\s+runs")
     for line in log_text.splitlines():
+        entry: dict[str, int] | None = None
         m = pat.search(line)
         if m:
             try:
-                cov_max = max(cov_max, int(m.group(2)))
-                ft_max = max(ft_max, int(m.group(3)))
-                corp_max = max(corp_max, int(m.group(4)))
+                iter_n = int(m.group(1))
+                cov = int(m.group(2))
+                ft = int(m.group(3))
+                corp = int(m.group(4))
+                cov_max = max(cov_max, cov)
+                ft_max = max(ft_max, ft)
+                corp_max = max(corp_max, corp)
+                execs_estimated = max(execs_estimated, iter_n)
+                entry = {"t": iter_n, "cov": cov, "corp": corp, "exec_s": 0}
             except ValueError:
                 pass
-            try:
-                execs_estimated = max(execs_estimated, int(m.group(1)))
-            except ValueError:
-                pass
-            continue
-        m2 = pat_no_ft.search(line)
-        if m2:
-            try:
-                cov_max = max(cov_max, int(m2.group(2)))
-                corp_max = max(corp_max, int(m2.group(3)))
-            except ValueError:
-                pass
-            try:
-                execs_estimated = max(execs_estimated, int(m2.group(1)))
-            except ValueError:
-                pass
+        else:
+            m2 = pat_no_ft.search(line)
+            if m2:
+                try:
+                    iter_n = int(m2.group(1))
+                    cov = int(m2.group(2))
+                    corp = int(m2.group(3))
+                    cov_max = max(cov_max, cov)
+                    corp_max = max(corp_max, corp)
+                    execs_estimated = max(execs_estimated, iter_n)
+                    entry = {"t": iter_n, "cov": cov, "corp": corp, "exec_s": 0}
+                except ValueError:
+                    pass
+        # Extract exec/s if present
+        if entry is not None:
+            esm = exec_s_pat.search(line)
+            if esm:
+                try:
+                    entry["exec_s"] = int(esm.group(1))
+                except ValueError:
+                    pass
+            timeseries.append(entry)
             continue
         dm = done_pat.search(line)
         if dm:
@@ -166,7 +182,7 @@ def _parse_stats(log_text: str) -> tuple[int, int, int, int]:
                 execs_estimated = max(execs_estimated, int(dm.group(1)))
             except ValueError:
                 pass
-    return cov_max, ft_max, corp_max, execs_estimated
+    return cov_max, ft_max, corp_max, execs_estimated, timeseries
 
 
 def run_fuzz(
@@ -351,7 +367,7 @@ def run_fuzz(
                 except Exception:
                     pass
 
-    cov_max, ft_max, corp_max, execs_estimated = _parse_stats(combined_log)
+    cov_max, ft_max, corp_max, execs_estimated, timeseries = _parse_stats(combined_log)
     # Try to estimate execs from log if still 0: count # lines * scale? Already attempted via #N
     # Also look for exec/s lines to approximate, fallback to parsing INITED/DONE
     if execs_estimated == 0:
@@ -394,6 +410,7 @@ def run_fuzz(
         "dict": dict_file,
         "campaign_dir": str(campaign_dir_abs),
         "status": status,
+        "timeseries": timeseries,
     }
     stats_path = campaign_dir / "stats.json"
     stats_path_abs = campaign_dir_abs / "stats.json"

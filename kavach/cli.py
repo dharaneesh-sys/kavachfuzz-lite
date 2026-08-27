@@ -123,6 +123,27 @@ def triage_cmd(
     triage_campaign(campaign)
 
 
+@app.command("repro")
+def repro_cmd(
+    crash_file: str = typer.Argument(..., help="Path to crash artifact to reproduce"),
+) -> None:
+    """Reproduce a crash PoC against its harness."""
+    from kavach.repro import run_repro
+
+    code = run_repro(crash_file)
+    raise typer.Exit(code=code)
+
+
+@app.command("minimize-poc")
+def minimize_poc_cmd(
+    crash_file: str = typer.Argument(..., help="Path to crash artifact to minimize"),
+) -> None:
+    """Minimize a crash PoC via delta-debugging."""
+    from kavach.minimizer import minimize_poc
+
+    minimize_poc(crash_file)
+
+
 @report_app.command("serve")
 def report_serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind"),
