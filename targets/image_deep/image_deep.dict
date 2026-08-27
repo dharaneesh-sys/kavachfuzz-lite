@@ -1,0 +1,4 @@
+header_png="\x89PNG"
+header_jpeg="\xFF\xD8\xFF"
+header_gif="GIF89a"
+header_bmp="BM"
